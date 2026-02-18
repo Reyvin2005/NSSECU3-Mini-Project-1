@@ -1,0 +1,344 @@
+## *Role:* You are an Expert Cybersecurity Researcher and Python Developer specializing in Malware Analysis, Digital Forensics, YARA rule development, and file signature analysis.
+
+## *Project Context:* University project (NSSECU3 MP1 - Malware Scanner) with focus on "Zero-Day" detection. We have a dataset of exactly 220 specific source files across multiple formats (JPEG, PNG, EXE, PDF, DOCX, ZIP, etc.).
+
+## *Core Challenge:* Build a Python-based File Scanner that MUST locate these exact 220 files (plus any duplicates) across a Windows filesystem, specifically:
+- C: Drive (system drive)
+- Mounted Drive via Arsenal Image Mounter (e.g., E: drive; Note: This can be any letter and can be more than one mounted drive)
+
+## *Non-Negotiable Detection Logic ("Zero-Day" Approach):*
+1. *Precision Requirement:* "Walang sobra, walang kulang" - Zero false positives, zero missed files
+2. *Evasion-Resistant:* Must detect files even after:
+   - Renaming (any filename)
+   - Relocation (any directory depth)
+   - Hiding among unrelated files
+3. *Duplicate Handling:* If files are copied (e.g., 2x duplicates), scanner must detect 220 + duplicates = 440 files
+4. *Exclusion:* Must ignore all non-target system files completely
+
+## *Enhanced Detection Methodology:*
+*Hybrid Two-Phase Detection Approach:*
+
+### *PHASE 1: YARA Quick Filtering*
+- Generate YARA rules based on first 50 bytes (Magic Numbers/File Signature) for initial filtering
+- These 50-byte signatures act as the first line of detection for rapid scanning
+- Store comprehensive metadata including original hashes in YARA rules
+
+### *PHASE 2: Cryptographic Hash Verification*
+- *CRITICAL UPDATE:* First 50 bytes are NOT unique enough for reliable detection
+- Must perform cryptographic hash verification (MD5 + SHA1) for zero false positives
+- Only files passing BOTH phases are considered valid matches
+- File size verification as additional quick filter before hash calculation
+
+### *Architectural Principle:*
+- 50-byte signatures are used for CSV display and quick filtering only
+- Cryptographic hashes (MD5, SHA1) provide definitive identification
+- "Zero-Day" aspect preserved through location/filename independence
+
+## *Technical Stack:*
+- *Language:* Python 3.8+
+- *Required Libraries:* os, yara, csv, hashlib, binascii, json (for verification data)
+- *Do NOT use:* python-magic, magic, or any external file type detection libraries
+- *Code Quality:* Clean, modular, production-ready with proper error handling
+- *Performance:* Must handle large drives efficiently (stream files for hashing to save RAM)
+- *Memory Efficiency:* Calculate hashes only for YARA-matched files, not all files
+
+---
+
+## **TASK 1: rule_generator.py (The Learner/Analyzer)**
+
+*Enhanced Objective:* Analyze 220 source files and generate:
+1. A SINGLE signatures.yar file with 50-byte signature rules for quick filtering
+2. A file_verification_data.json file with cryptographic hashes for definitive verification
+
+*Logic Flow:*
+1. *Input:* Folder containing exactly 220 source files
+2. *For each file:*
+   - Read first 50 bytes (rb mode) for YARA rule generation
+   - Calculate MD5 hash (streaming, entire file)
+   - Calculate SHA1 hash (streaming, entire file)
+   - Get file size
+   - *CRITICAL:* Determine SPECIFIC file type by analyzing ALL 50 bytes using 3-tier approach
+   - Generate unique rule name: rule_[3-digit-index]_[FILE_TYPE]_[MD5_PREFIX]
+3. *YARA Rule Structure (Updated):*
+   
+yara
+   rule rule_001_JPEG_JFIF_a1b2c3d4 {
+       meta:
+           original_name = "sample.jpg"
+           file_type = "JPEG-JFIF"
+           file_size = 10240
+           original_md5 = "d41d8cd98f00b204e9800998ecf8427e"
+           original_sha1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+           id = "001"
+           detection_method = "HYBRID_SIGNATURE_AND_HASH"
+           requires_hash_verification = "true"
+       
+       strings:
+           $magic_bytes = { FF D8 FF E0 00 10 4A 46 49 46 00 01 01 00 00 01 ... }
+       
+       condition:
+           $magic_bytes at 0
+   }
+   
+4. *Output Files:*
+   - signatures.yar: 220 YARA rules with 50-byte signatures + hash metadata
+   - file_verification_data.json: JSON file with complete verification data for scanner
+
+*Critical Requirements for Rule Generator:*
+
+### *A. 3-Tier File Type Detection:*
+def determine_file_type(first_50_bytes):
+    """
+    3-TIER APPROACH for handling standard AND non-standard magic numbers
+    IMPORTANT: This is COMPLETELY SEPARATE from YARA - no yara import used here!
+    """
+    # TIER 1: Standard Magic Number Detection
+    file_type = detect_standard_signatures(first_50_bytes)
+    if file_type != "UNKNOWN":
+        return file_type, "STANDARD_SIGNATURE"
+    
+    # TIER 2: Pattern Analysis (for corrupted/modified files)
+    file_type = analyze_patterns(first_50_bytes)
+    if file_type != "UNKNOWN":
+        return file_type, "PATTERN_ANALYSIS"
+    
+    # TIER 3: Content Characteristics (last resort)
+    file_type = analyze_characteristics(first_50_bytes)
+    return file_type, "CONTENT_ANALYSIS"
+
+### *B. Handle Non-Standard Magic Numbers:*
+Some files may have corrupted, modified, or unrecognizable magic numbers. MUST handle by:
+1. *Never failing* - Always create a YARA rule using exact 50 bytes
+2. *Descriptive labels* - Use prefixes: MODIFIED-, CORRUPTED-, CUSTOM-
+3. *Examples:*
+   - MODIFIED-JPEG (slightly altered JPEG header)
+   - CORRUPTED-PDF (damaged PDF signature)
+   - CUSTOM-NULLPAD (starts with many null bytes)
+   - CUSTOM-HIGHENT (high entropy, possibly encrypted)
+   - CUSTOM-UNKNOWN-BIN (unrecognizable binary)
+
+### *C. Hash Calculation and Storage:*
+def calculate_file_hashes(file_path):
+    """Calculate MD5 and SHA1 hashes using streaming to save RAM."""
+    hash_md5 = hashlib.md5()
+    hash_sha1 = hashlib.sha1()
+    
+    with open(file_path, 'rb') as f:
+        for chunk in iter(lambda: f.read(65536), b''):
+            hash_md5.update(chunk)
+            hash_sha1.update(chunk)
+    
+    return hash_md5.hexdigest(), hash_sha1.hexdigest()
+
+### *D. YARA Rule Requirements:*
+- Each rule must include comprehensive metadata including hashes
+- Hex strings must be properly formatted for YARA
+- Rules must be valid YARA syntax (no periods in rule names)
+- All 220 files must be processed successfully
+- Include hash prefixes in rule names for uniqueness
+
+### *E. Verification Data File:*
+Generate file_verification_data.json with structure:
+[
+  {
+    "id": "001",
+    "original_name": "sample.jpg",
+    "file_type": "JPEG-JFIF",
+    "file_size": 10240,
+    "md5": "d41d8cd98f00b204e9800998ecf8427e",
+    "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+    "first_50_bytes_hex": "FFD8FFE000104A4649460001010100010001..."
+  }
+]
+
+---
+
+## **TASK 2: malware_scanner.py (The Hunter/Scanner)**
+
+*Enhanced Objective:* Recursively scan drives using two-phase detection:
+1. YARA quick filtering (first 50 bytes)
+2. Cryptographic hash verification (MD5 + SHA1)
+
+*Logic Flow:*
+1. *Initialize Scanner:*
+   - Compile YARA rules from signatures.yar
+   - Load verification data from file_verification_data.json
+   - Create hash lookup dictionaries for O(1) verification
+   - Set up CSV writer with exact column order
+2. *Drive Detection:*
+   - Automatically detect C: drive
+   - Detect Arsenal Image Mounter drive (check for mounted volumes)
+3. **Two-Phase Recursive Scanning (os.walk()):**
+   - *Phase 1 (YARA Filter):* For each file, read first 50 bytes, apply YARA rules
+   - *Phase 2 (Hash Verify):* For YARA-matched files:
+     * Check file size against expected size (quick filter)
+     * Calculate MD5 hash (streaming)
+     * Verify against stored MD5 in verification data
+     * Calculate SHA1 hash (only if MD5 matches)
+     * Verify SHA1 for absolute certainty
+   - Skip system/protected paths gracefully (handle PermissionError)
+4. *CSV Output:*
+   - File: MP1_Scan_Results.csv
+   - *EXACT COLUMNS (in this order):*
+     1. File Name (current filename)
+     2. Hash MD5 (32-character hex)
+     3. Hash SHA1 (40-character hex)
+     4. Directory (full absolute path)
+     5. File Type (SPECIFIC type from OUR 50-byte analysis)
+     6. Magic Bytes (first 50 bytes in hex)
+   - *CRITICAL FORMATTING REQUIREMENTS:*
+     1. *File Grouping:* All files MUST be grouped together by SPECIFIC File Type
+     2. *Within Groups:* Sort alphabetically by filename within each file type group
+     3. *Group Order:* Use logical ordering: Images → Documents → Executables → Archives → Custom files
+     4. *Custom Files Group:* All CUSTOM-* files grouped together at the end
+
+*Enhanced Scanner Requirements:*
+- *Zero False Positives:* Achieved through cryptographic hash verification
+- *Complete Coverage:* Must find all instances (renamed, moved, duplicated)
+- *SPECIFIC File Types:* Must use exact file types from OUR metadata analysis
+- *File Type Grouping:* CSV must group files by SPECIFIC type as specified
+- *Performance:* Streaming hash calculation ONLY for YARA-matched files
+- *Robustness:* Handle file access errors without crashing
+- *Validation:* Final count verification (220+ files)
+- *Statistics:* Track and display false positive rate, verification rate
+
+---
+
+## *CSV OUTPUT FORMATTING SPECIFICS:*
+
+### *Required Sorting Logic:*
+# Custom sorting order for file types
+FILE_TYPE_ORDER = [
+    # Standard Images
+    "JPEG-JFIF", "JPEG-EXIF", "JPEG",
+    "PNG", "GIF87a", "GIF89a", "BMP", "TIFF",
+    # Standard Documents
+    "PDF-1.4", "PDF-1.5", "PDF-1.6", "PDF-1.7", "PDF",
+    "DOCX", "XLSX", "PPTX", "DOC", "XLS", "PPT",
+    # Executables
+    "EXE-x86", "EXE-x64", "EXE", "DLL", "MSI",
+    # Archives
+    "ZIP", "RAR", "7Z", "TAR", "GZ",
+    # Text/Data
+    "TXT", "CSV", "JSON", "XML", "HTML", "HTM",
+    # Modified Files
+    "MODIFIED-*", "CORRUPTED-*",
+    # Custom Files (grouped at end)
+    "CUSTOM-*"
+]
+
+# Within each group: sort alphabetically by filename
+
+### *Example CSV Structure (Identical Format):*
+File Name,Hash MD5,Hash SHA1,Directory,File Type,Magic Bytes
+photo1.jpg,d41d8cd...,da39a3e...,C:\Pictures,JPEG-JFIF,FFD8FFE000104A46...
+photo2.jpg,098f6bc...,a94a8fe...,E:\Images,JPEG-EXIF,FFD8FFE100104A46...
+manual.pdf,5f4dcc3...,7c222fb...,C:\Docs,PDF-1.7,255044462D312E370A25E2...
+calc.exe,482c811...,7b8b965...,C:\Windows,EXE-x64,4D5A9000030000000400...
+mystery.bin,9f27410...,3d4f2bf...,E:\Data,CUSTOM-NULLPAD,0000000000000000...
+corrupt.jpg,e4da3b7...,8fa14cd...,C:\Temp,MODIFIED-JPEG,FFD800034A464946...
+
+---
+
+## *HANDLING NON-STANDARD MAGIC NUMBERS (Unchanged):*
+
+### *Detection Strategy:*
+1. *Tier 1: Standard Signatures* - Check against known file signatures
+2. *Tier 2: Pattern Analysis* - Look for recognizable patterns in 50 bytes
+3. *Tier 3: Content Analysis* - Analyze statistical characteristics
+
+### *Classification Examples:*
+- *Null-heavy:* CUSTOM-NULLPAD (≥40% null bytes in first 50)
+- *High entropy:* CUSTOM-HIGHENT (entropy > 7.5)
+- *ASCII dominant:* CUSTOM-ASCIIDOM (≥80% printable ASCII)
+- *Modified headers:* MODIFIED-[BASETYPE]
+- *Corrupted signatures:* CORRUPTED-[BASETYPE]
+
+---
+
+## *ADDITIONAL DELIVERABLES (Updated):*
+
+*1. References (Required):*
+Provide at least 2 specific, actionable references:
+- *YARA Official Documentation:* Rule writing and best practices
+- *File Signature Resources:* Information on magic number analysis and file structure
+- *Cryptographic Hash References:* MD5/SHA1 collision resistance and forensic applications
+
+*2. Justification Essay (Enhanced):*
+Explain why this "Hybrid 50-byte signature with hash verification" approach is superior:
+- *Zero False Positives:* Cryptographic hashes provide definitive identification
+- *Performance Efficiency:* YARA filtering reduces hash calculations by 99%+
+- *Zero-Day Detection:* Identifies files without knowing names/locations
+- *Evasion Resistance:* Handles renaming, relocation, header modification
+- *Forensic Precision:* Provides specific file type information plus hash verification
+- *Non-Standard Handling:* Robust detection for corrupted/custom formats
+- *Computational Efficiency:* Balances rapid scanning with absolute accuracy
+
+---
+
+## *EXPECTED OUTPUT FROM AI:*
+
+1. **Complete rule_generator.py** with:
+   - 3-tier file type detection
+   - Hash calculation (MD5, SHA1) for all 220 files
+   - Proper YARA rule generation with hash metadata
+   - JSON verification data output
+   - Error handling for corrupted files
+
+2. **Complete malware_scanner.py** with:
+   - Dual-drive scanning (C: + mounted)
+   - Two-phase detection (YARA + hash verification)
+   - Streaming hash calculation only for matched files
+   - Hash lookup dictionaries for O(1) verification
+   - CSV output with SPECIFIC file types and proper grouping
+   - Final count validation with statistics
+
+3. **Sample signatures.yar** showing:
+   - Standard file rules with hash metadata
+   - Modified/corrupted file rules
+   - Custom file rules with descriptive labels
+
+4. **Sample file_verification_data.json** showing:
+   - Complete verification data for sample files
+   - Hash-based identification structure
+
+5. *Testing instructions* to verify:
+   - Detection of all 220 files
+   - Handling of renamed/moved/duplicated files
+   - Zero false positives through hash verification
+   - CSV output format and grouping
+   - Non-standard file detection
+
+---
+
+## *KEY CONSTRAINTS TO EMPHASIZE:*
+
+1. *"Walang sobra, walang kulang"* - Zero false positives (via hash verification), zero missed files
+2. *50-byte signatures for filtering only* - Not for definitive identification
+3. *Cryptographic hash verification* - Required for all matches (MD5 + SHA1)
+4. *Single YARA file* - All 220 rules in one file with hash metadata
+5. *Verification data file* - Separate JSON file for hash lookup
+6. *Exact CSV format* - Columns must match exactly + proper grouping
+7. *Duplicate handling* - Must find ALL copies via hash matching
+8. *Zero system files* - Only our 220 targets (and duplicates) in output
+9. *No external libraries* - Only os, yara, csv, hashlib, binascii, json
+10. *Clear Architecture:* File type analysis in rule_generator.py, YARA for quick filtering, hashes for verification
+
+---
+
+## *SUCCESS CRITERIA:*
+
+The solution is successful if:
+1. *Completeness:* CSV contains exactly 220+ entries (all target files + duplicates)
+2. *Accuracy:* All entries correspond to original 220 files (verified by hash)
+3. *Zero False Positives:* No non-target files appear in CSV (hash-verified)
+4. *Specificity:* File types are specific (JPEG-JFIF, PDF-1.7, etc.)
+5. *Grouping:* CSV is properly grouped by file type
+6. *Non-Standard Handling:* Custom/modified files are correctly classified
+7. *Robustness:* Handles renamed/moved/duplicated files correctly
+8. *Performance:* Efficient scanning with streaming hashes only for matched files
+9. *Verification:* Hash verification eliminates all false positives
+10. Error Handling: when files are unaccesible indicate and skip, program should not crash
+11. Ctrl C exit gracefully
+
+*Note to AI:* This is a forensic-grade tool requiring absolute precision. The hybrid approach addresses the limitation that 50-byte signatures alone cause false positives. The "zero-day" aspect is preserved through filename/location independence. The 50-byte signatures are still used for CSV display and rapid filtering, but definitive identification is through cryptographic hashes. Ensure all drives (including Arsenal-mounted) are scanned thoroughly. CSV formatting must be exact as specified for grading.
